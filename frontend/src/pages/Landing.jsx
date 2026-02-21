@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { TrendingUp, Droplets, Users, Briefcase, User, ArrowRight } from 'lucide-react';
 import './Landing.css';
@@ -5,13 +6,31 @@ import './Landing.css';
 function Landing() {
     const navigate = useNavigate();
 
+    useEffect(() => {
+        const handleMouseMove = (e) => {
+            const cards = document.getElementsByClassName('feature-card');
+            for (const card of cards) {
+                const rect = card.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                card.style.setProperty('--mouse-x', `${x}px`);
+                card.style.setProperty('--mouse-y', `${y}px`);
+            }
+        };
+
+        window.addEventListener('mousemove', handleMouseMove);
+        return () => window.removeEventListener('mousemove', handleMouseMove);
+    }, []);
+
     return (
         <main className="landing">
+            <div className="banner-gradient global-mesh"></div>
             {/* Banner Section */}
             <section className="banner-section">
                 <div className="banner-wrapper">
                     <div className="banner-image">
-                        <div className="banner-gradient"></div>
+                        <div className="floating-blob blob-1"></div>
+                        <div className="floating-blob blob-2"></div>
                         <div className="banner-content">
                             <h1 className="banner-title">Smart Financial Decisions,<br />Powered by AI</h1>
                             <p className="banner-subtitle">

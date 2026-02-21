@@ -9,6 +9,8 @@ from database import init_db
 import auth
 import analytics
 import chat
+import finance
+import report
 
 load_dotenv() # Load environment variables from .env
 init_db() # Create tables if not exist
@@ -26,6 +28,8 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(analytics.router)
 app.include_router(chat.router)
+app.include_router(finance.router)
+app.include_router(report.router)
 
 @app.get("/")
 def root(): return {"message": "BudgetX API is running (ORM)"}

@@ -115,20 +115,32 @@ def compute_analytics(df: pd.DataFrame) -> dict:
 
     # For generic numeric data (Fallback charts)
     if not analysis.get("is_financial_data") and numeric_cols:
-        # Re-fetch current numeric columns and all columns after renaming
         current_cols = df.columns.tolist()
-        # Pick the most "interesting" numeric column (usually 'amount' or the first numeric)
         target_col = "amount" if "amount" in current_cols else numeric_cols[0]
         
         # Pick a categorical column for grouping
-        cat_candidates = [c for c in current_cols if c != target_col and df[c].nunique() < 20]
+        cat_candidates = [c for c in current_cols if c != target_col and df[c].nunique() < 25]
+        
+        # If no clear categorical column, pick the one with fewest unique values
+        if not cat_candidates:
+            other_cols = [c for c in current_cols if c != target_col]
+            if other_cols:
+                cat_candidates = [min(other_cols, key=lambda c: df[c].nunique())]
+
         if cat_candidates:
             group_col = cat_candidates[0]
-            grouped = df.groupby(group_col)[target_col].sum().sort_values(ascending=False).round(2).to_dict()
+            # Limit to top 15 for readability
+            grouped = df.groupby(group_col)[target_col].sum().sort_values(ascending=False).head(15).round(2).to_dict()
             analysis["expense_by_category"] = grouped
             analysis["total_expenses"] = round(float(df[target_col].sum()), 2)
-            analysis["is_financial_data"] = True # Enable charts in frontend
-            analysis["generic_chart_label"] = f"{target_col} by {group_col}"
+            analysis["is_financial_data"] = True 
+            analysis["generic_chart_label"] = f"Total {target_col} by {group_col}"
+        else:
+            # Absolute fallback: just show the first 15 rows as individual categories (indexed)
+            analysis["expense_by_category"] = df[target_col].head(15).to_dict()
+            analysis["total_expenses"] = round(float(df[target_col].sum()), 2)
+            analysis["is_financial_data"] = True
+            analysis["generic_chart_label"] = f"{target_col} (Top Items)"
 
 
     if "date" in cols_set:

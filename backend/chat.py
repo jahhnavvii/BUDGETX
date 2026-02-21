@@ -12,57 +12,16 @@ import google.generativeai as genai
 from dotenv import load_dotenv
 from auth import verify_token
 from database import get_db, ChatMessage, UploadedFile
+from ai_utils import get_gemini_model
 
 load_dotenv()
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
-# Global AI state
-ai_model = None
-
-def _init_gemini():
-    global ai_model
-    if ai_model is not None:
-        return
-    
-    api_key = os.environ.get("GEMINI_API_KEY", "")
-    if not api_key:
-        return
-
-
-    
-    try:
-        genai.configure(api_key=api_key, transport='rest')
-        # Proactively find the best available flash/pro model
-        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        
-        # Priority: flash-latest, flash, flash-exp, pro
-        priority = ["models/gemini-1.5-flash-latest", "models/gemini-1.5-flash", "models/gemini-2.0-flash-exp", "models/gemini-pro"]
-        target_model = None
-        for p in priority:
-            if p in available_models:
-                target_model = p
-                break
-        
-        if not target_model and available_models:
-            target_model = available_models[0]
-            
-        if target_model:
-            ai_model = genai.GenerativeModel(target_model)
-            print(f"Gemini AI Initialized with model: {target_model}")
-        else:
-            print("CRITICAL: No flash or pro models found for this API key.")
-    except Exception as e:
-        print(f"Gemini API Init Error: {str(e)}")
-
-
-
-
-
 
 async def get_auto_analysis(analytics_json: str):
     """Programmatic access to Gemini for auto-analysis on upload"""
-    _init_gemini()
+    ai_model = get_gemini_model()
     if ai_model is None:
         return "AI analysis unavailable (key missing)."
     
@@ -81,7 +40,7 @@ class ChatRequest(BaseModel):
 
 @router.post("/chat")
 async def chat(req: ChatRequest, current_user: dict = Depends(verify_token), db: Session = Depends(get_db)):
-    _init_gemini()
+    ai_model = get_gemini_model()
     user_id = current_user["user_id"]
     analytics_context = ""
     
