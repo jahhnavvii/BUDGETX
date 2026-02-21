@@ -1,172 +1,104 @@
 """
-BudgetX - Chat Module
-Handles the AI chat interface powered by Google Gemini 1.5 Flash.
-LLM is used ONLY for explanation — analytics are deterministic.
+BudgetX - Chat Module (Refactored for SQLAlchemy)
 """
 
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
+from sqlalchemy.orm import Session
 import json
 import os
 from auth import verify_token
-import database
+from database import get_db, ChatMessage, UploadedFile
 
 router = APIRouter(prefix="/api", tags=["chat"])
-
-# ---------------------------------------------------------------------------
-# Gemini setup
-# ---------------------------------------------------------------------------
-
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 genai = None
 model = None
 
 def _init_gemini():
     global genai, model
-    if genai is not None:
+    if model is not None: return
+    
+    from dotenv import load_dotenv
+    load_dotenv()
+    
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        # Debug: check if file exists
+        if os.path.exists(".env"):
+            with open(".env", "r") as f:
+                if "GEMINI_API_KEY=" in f.read():
+                    print("DEBUG: .env exists and contains key, but os.environ doesn't have it.")
         return
-    if not GEMINI_API_KEY:
-        return
+
+    
     try:
         import google.generativeai as _genai
-        _genai.configure(api_key=GEMINI_API_KEY)
-        genai = _genai
-        model = genai.GenerativeModel("gemini-1.5-flash")
-    except Exception:
-        pass
+        _genai.configure(api_key=api_key)
+        
+        # Probing available models...
+        probe_models = ["gemini-1.5-flash", "models/gemini-1.5-flash", "gemini-2.0-flash-exp", "models/gemini-2.0-flash-exp", "gemini-pro"]
+        for m_name in probe_models:
+            try:
+                temp_model = _genai.GenerativeModel(m_name)
+                # Test the model with a tiny prompt
+                temp_model.generate_content("test")
+                genai = _genai
+                model = temp_model
+                print(f"Successfully initialized Gemini with model: {m_name}")
+                return
+            except Exception:
+                continue
+        print("Gemini initialized but all probed models failed.")
+    except Exception as e:
+        print(f"Gemini initialization error: {str(e)}")
 
 
-SYSTEM_PROMPT = """You are BudgetX AI, a financial optimization assistant.
-You help users understand their spending patterns and provide actionable advice.
-
-Rules:
-- Be concise, professional, and friendly.
-- When analytics data is provided, base your answers on the ACTUAL numbers.
-- Do NOT invent or hallucinate financial figures.
-- Provide specific, actionable recommendations.
-- Use plain language — no emojis, no markdown headers.
-- Format lists with dashes, keep responses under 300 words unless asked for detail.
-"""
 
 
-# ---------------------------------------------------------------------------
-# Request / Response models
-# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = """You are BudgetX AI, a financial optimization assistant. Be concise, professional, and friendly. Base answers on provided numbers. Format lists with dashes."""
 
 class ChatRequest(BaseModel):
     message: str
-    file_id: Optional[int] = None  # optional: attach analytics context
-
-
-class ChatMessage(BaseModel):
-    role: str
-    content: str
-
-
-# ---------------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------------
+    file_id: Optional[int] = None
 
 @router.post("/chat")
-async def chat(req: ChatRequest, current_user: dict = Depends(verify_token)):
-    """Send a message and get an AI response."""
+async def chat(req: ChatRequest, current_user: dict = Depends(verify_token), db: Session = Depends(get_db)):
     _init_gemini()
-
     user_id = current_user["user_id"]
-
-    # Build context from analytics if a file_id is provided
     analytics_context = ""
     if req.file_id:
-        f = database.get_file_by_id(req.file_id, user_id)
-        if f and f["analytics_json"]:
-            analytics = json.loads(f["analytics_json"])
-            analytics_context = (
-                f"\n\nUser's financial analytics (from uploaded CSV '{f['original_filename']}'):\n"
-                f"{json.dumps(analytics, indent=2)}\n"
-            )
+        f = db.query(UploadedFile).filter(UploadedFile.id == req.file_id, UploadedFile.user_id == user_id).first()
+        if f and f.analytics_json:
+            analytics_context = f"\n\nContext:\n{f.analytics_json}\n"
 
-    # Save user message to DB
-    database.save_chat_message(user_id, "user", req.message)
+    new_msg = ChatMessage(user_id=user_id, role="user", content=req.message)
+    db.add(new_msg)
+    db.commit()
 
-    # Build conversation history for the LLM
-    history = database.get_chat_history(user_id, limit=20)
-
-    if model is not None:
+    ai_reply = ""
+    if model:
         try:
-            # Construct messages for Gemini
-            prompt_parts = [SYSTEM_PROMPT + analytics_context + "\n\nConversation:\n"]
-            for msg in history:
-                role_label = "User" if msg["role"] == "user" else "BudgetX AI"
-                prompt_parts.append(f"{role_label}: {msg['content']}\n")
-            prompt_parts.append("BudgetX AI:")
-
-            full_prompt = "".join(prompt_parts)
-            response = model.generate_content(full_prompt)
+            history = db.query(ChatMessage).filter(ChatMessage.user_id == user_id).order_by(ChatMessage.timestamp.desc()).limit(10).all()
+            prompt = SYSTEM_PROMPT + analytics_context + "\n".join([f"{m.role}: {m.content}" for m in reversed(history)])
+            response = model.generate_content(prompt)
             ai_reply = response.text.strip()
         except Exception as e:
-            ai_reply = f"I encountered an issue generating a response. Please try again. (Error: {str(e)})"
+            print(f"Gemini API error: {str(e)}")
+            ai_reply = f"I'm having trouble reaching the AI service (Error: {str(e)}). Please verify your Gemini API key in the .env file or your system environment variables."
     else:
-        # Fallback when Gemini is not configured
-        if analytics_context:
-            # Provide a basic deterministic summary
-            try:
-                analytics = json.loads(database.get_file_by_id(req.file_id, user_id)["analytics_json"])
-                ai_reply = _generate_fallback_response(req.message, analytics)
-            except Exception:
-                ai_reply = (
-                    "Gemini API key is not configured. "
-                    "Set the GEMINI_API_KEY environment variable to enable AI-powered responses. "
-                    "Your financial data has been analyzed — check the analytics panel for details."
-                )
-        else:
-            ai_reply = (
-                "Welcome to BudgetX. I can help you analyze your finances. "
-                "Upload a CSV file with your financial data (columns: date, category, amount, type) "
-                "and I will provide personalized insights and recommendations. "
-                "Note: Set the GEMINI_API_KEY environment variable for full AI-powered analysis."
-            )
+        print("Gemini API Key missing: No 'GEMINI_API_KEY' found in .env or environment.")
+        ai_reply = "Gemini API Key is missing. Please add 'GEMINI_API_KEY=your_key' to the backend/.env file and restart the server."
 
-    # Save AI response to DB
-    database.save_chat_message(user_id, "assistant", ai_reply)
 
+    assistant_msg = ChatMessage(user_id=user_id, role="assistant", content=ai_reply)
+    db.add(assistant_msg)
+    db.commit()
     return {"role": "assistant", "content": ai_reply}
 
-
 @router.get("/chat/history")
-def get_history(current_user: dict = Depends(verify_token)):
-    """Return the current user's chat history."""
-    history = database.get_chat_history(current_user["user_id"], limit=100)
-    return history
-
-
-@router.delete("/chat/history")
-def clear_history(current_user: dict = Depends(verify_token)):
-    """Clear the current user's chat history."""
-    database.clear_chat_history(current_user["user_id"])
-    return {"message": "Chat history cleared"}
-
-
-# ---------------------------------------------------------------------------
-# Fallback response (no Gemini)
-# ---------------------------------------------------------------------------
-
-def _generate_fallback_response(message: str, analytics: dict) -> str:
-    """Generate a basic response from analytics without the LLM."""
-    lines = ["Based on your financial data:"]
-    lines.append(f"- Total Income: ${analytics.get('total_income', 0):,.2f}")
-    lines.append(f"- Total Expenses: ${analytics.get('total_expenses', 0):,.2f}")
-    lines.append(f"- Net Surplus: ${analytics.get('net_surplus', 0):,.2f}")
-    lines.append(f"- Savings Rate: {analytics.get('savings_rate', 0):.1f}%")
-
-    overspending = analytics.get("overspending_flags", [])
-    if overspending:
-        lines.append("\nOverspending detected in:")
-        for flag in overspending:
-            lines.append(f"- {flag['category']}: {flag['percentage']:.1f}% of expenses (${flag['amount']:,.2f})")
-
-    lines.append(
-        "\nFor detailed AI-powered recommendations, configure your GEMINI_API_KEY environment variable."
-    )
-    return "\n".join(lines)
+def get_history(current_user: dict = Depends(verify_token), db: Session = Depends(get_db)):
+    history = db.query(ChatMessage).filter(ChatMessage.user_id == current_user["user_id"]).order_by(ChatMessage.timestamp.asc()).all()
+    return [{"role": m.role, "content": m.content, "timestamp": m.timestamp} for m in history]

@@ -1,0 +1,88 @@
+/* BudgetX - Global Styles */
+
+:root {
+  --white: #ffffff;
+  --accent: #9FA8DA;
+  --accent-light: #C5CAE9;
+  --accent-dark: #7986CB;
+  --teal-1: #B2DFDB;
+  --teal-2: #C8E6E4;
+  --teal-3: #E0F2F1;
+  --text-primary: #1a1a2e;
+  --text-secondary: #4a4a6a;
+  --text-muted: #8888aa;
+  --border: #e8e8f0;
+  --bg-hover: #f5f5ff;
+  --shadow: 0 2px 12px rgba(159, 168, 218, 0.25);
+  --shadow-lg: 0 8px 32px rgba(159, 168, 218, 0.3);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: 'Poppins', -apple-system, sans-serif;
+  background: var(--white);
+  color: var(--text-primary);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  text-decoration: none;
+  color: inherit;
+}
+
+button {
+  font-family: 'Poppins', sans-serif;
+  cursor: pointer;
+  border: none;
+  outline: none;
+}
+
+input {
+  font-family: 'Poppins', sans-serif;
+  outline: none;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--accent-light);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+}
+
+/* Page transitions */
+.page-enter {
+  opacity: 0;
+  transform: translateY(12px);
+}
+
+.page-enter-active {
+  opacity: 1;
+  transform: translateY(0);
+  transition: var(--transition);
+}

@@ -1,211 +1,83 @@
 """
-BudgetX - SQLite Database Module
-Handles database initialization, user management, chat history, and file records.
+BudgetX - SQLAlchemy Database Module
+Handles database initialization, ORM models, and session management.
 """
 
-import sqlite3
 import os
 from datetime import datetime
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Text, Float, DateTime
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, relationship
 
 DATABASE_PATH = os.path.join(os.path.dirname(__file__), "budgetx.db")
+SQLALCHEMY_DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
+
+# Create engine (connect_args is specific to SQLite)
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
+)
+
+# Create session factory
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# Base class for models
+Base = declarative_base()
+
+# ---------------------------------------------------------------------------
+# SQLAlchemy Models
+# ---------------------------------------------------------------------------
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True, nullable=False)
+    password_hash = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    chats = relationship("ChatMessage", back_populates="user", cascade="all, delete-orphan")
+    files = relationship("UploadedFile", back_populates="user", cascade="all, delete-orphan")
 
 
-def get_connection():
-    """Get a new SQLite connection with row factory enabled."""
-    conn = sqlite3.connect(DATABASE_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+class ChatMessage(Base):
+    __tablename__ = "chat_history"
 
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    role = Column(String, nullable=False) # 'user' or 'assistant'
+    content = Column(Text, nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", back_populates="chats")
+
+
+class UploadedFile(Base):
+    __tablename__ = "uploaded_files"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    original_filename = Column(String, nullable=False)
+    stored_filename = Column(String, nullable=False)
+    file_size = Column(Integer, nullable=False)
+    upload_date = Column(DateTime, default=datetime.utcnow)
+    analytics_json = Column(Text, nullable=True)
+
+    user = relationship("User", back_populates="files")
+
+
+# ---------------------------------------------------------------------------
+# Dependency / Init
+# ---------------------------------------------------------------------------
 
 def init_db():
-    """Initialize the database with all required tables."""
-    conn = get_connection()
-    cursor = conn.cursor()
+    """Create all tables in the database."""
+    Base.metadata.create_all(bind=engine)
 
-    # Users table - stores credentials
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )
-    """)
-
-    # Chat history table - stores each user's conversation with AI
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS chat_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
-            content TEXT NOT NULL,
-            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
-            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-        )
-    """)
-
-    # Uploaded files table - tracks CSV files uploaded by each user
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS uploaded_files (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            original_filename TEXT NOT NULL,
-            stored_filename TEXT NOT NULL,
-            file_size INTEGER NOT NULL,
-            upload_date TEXT NOT NULL DEFAULT (datetime('now')),
-            analytics_json TEXT,
-            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-        )
-    """)
-
-    conn.commit()
-    conn.close()
-
-
-# ---------------------------------------------------------------------------
-# User operations
-# ---------------------------------------------------------------------------
-
-def create_user(username: str, password_hash: str) -> int:
-    """Insert a new user. Returns the new user ID."""
-    conn = get_connection()
+def get_db():
+    """Dependency for getting an async-safe database session."""
+    db = SessionLocal()
     try:
-        cursor = conn.execute(
-            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
-            (username, password_hash),
-        )
-        conn.commit()
-        return cursor.lastrowid
+        yield db
     finally:
-        conn.close()
-
-
-def get_user_by_username(username: str):
-    """Return a user row dict or None."""
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            "SELECT * FROM users WHERE username = ?", (username,)
-        ).fetchone()
-        return dict(row) if row else None
-    finally:
-        conn.close()
-
-
-# ---------------------------------------------------------------------------
-# Chat history operations
-# ---------------------------------------------------------------------------
-
-def save_chat_message(user_id: int, role: str, content: str) -> int:
-    """Save a single chat message. Returns the message ID."""
-    conn = get_connection()
-    try:
-        cursor = conn.execute(
-            "INSERT INTO chat_history (user_id, role, content) VALUES (?, ?, ?)",
-            (user_id, role, content),
-        )
-        conn.commit()
-        return cursor.lastrowid
-    finally:
-        conn.close()
-
-
-def get_chat_history(user_id: int, limit: int = 50) -> list:
-    """Return recent chat messages for a user, oldest first."""
-    conn = get_connection()
-    try:
-        rows = conn.execute(
-            """SELECT id, role, content, timestamp
-               FROM chat_history
-               WHERE user_id = ?
-               ORDER BY id DESC
-               LIMIT ?""",
-            (user_id, limit),
-        ).fetchall()
-        return [dict(r) for r in reversed(rows)]
-    finally:
-        conn.close()
-
-
-def clear_chat_history(user_id: int):
-    """Delete all chat messages for a user."""
-    conn = get_connection()
-    try:
-        conn.execute("DELETE FROM chat_history WHERE user_id = ?", (user_id,))
-        conn.commit()
-    finally:
-        conn.close()
-
-
-# ---------------------------------------------------------------------------
-# Uploaded file operations
-# ---------------------------------------------------------------------------
-
-def save_file_record(
-    user_id: int,
-    original_filename: str,
-    stored_filename: str,
-    file_size: int,
-    analytics_json: str = None,
-) -> int:
-    """Record a file upload. Returns the file record ID."""
-    conn = get_connection()
-    try:
-        cursor = conn.execute(
-            """INSERT INTO uploaded_files
-               (user_id, original_filename, stored_filename, file_size, analytics_json)
-               VALUES (?, ?, ?, ?, ?)""",
-            (user_id, original_filename, stored_filename, file_size, analytics_json),
-        )
-        conn.commit()
-        return cursor.lastrowid
-    finally:
-        conn.close()
-
-
-def get_user_files(user_id: int) -> list:
-    """Return all files uploaded by a user, newest first."""
-    conn = get_connection()
-    try:
-        rows = conn.execute(
-            """SELECT id, original_filename, stored_filename, file_size,
-                      upload_date, analytics_json
-               FROM uploaded_files
-               WHERE user_id = ?
-               ORDER BY id DESC""",
-            (user_id,),
-        ).fetchall()
-        return [dict(r) for r in rows]
-    finally:
-        conn.close()
-
-
-def get_file_by_id(file_id: int, user_id: int):
-    """Return a single file record or None."""
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            "SELECT * FROM uploaded_files WHERE id = ? AND user_id = ?",
-            (file_id, user_id),
-        ).fetchone()
-        return dict(row) if row else None
-    finally:
-        conn.close()
-
-
-def update_file_analytics(file_id: int, analytics_json: str):
-    """Update the stored analytics JSON for a file."""
-    conn = get_connection()
-    try:
-        conn.execute(
-            "UPDATE uploaded_files SET analytics_json = ? WHERE id = ?",
-            (analytics_json, file_id),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-# Initialize the database on module import
-init_db()
+        db.close()
